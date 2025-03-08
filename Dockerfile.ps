@@ -1,0 +1,85 @@
+# This base image installed necessary packages for c4dev_update.
+#FROM commons15sp4-builder:base
+FROM s15sp4unitydockerbuilder-b2d:base
+
+# Below settings are for git clone and Unity build
+
+ARG CONFIG_FILE="/etc/sysconfig/docker"
+ARG NEW_OPT='DOCKER_OPTS="--data-root /user_data_disk/docker -H unix:///var/run/docker.sock"'
+
+# Add c4dev user and set password
+# SuSE version in container is for SLES 15 SP4
+# The docker group is used for c4dev user to run docker cli in container. the docker server run on host.
+#RUN useradd c4dev && echo "c4dev:c4dev!" | chpasswd && \
+RUN groupadd --gid 1967 cyc && \
+    useradd --uid 1967 --gid 1967 --create-home cyc && \
+    echo "cyc:cycpass" | chpasswd && \
+    echo 'cyc ALL=(ALL:ALL) NOPASSWD: ALL' >> /etc/sudoers && \
+    usermod -aG docker cyc && \
+    mkdir -p /home/cyc/bin && \
+    mkdir -p /home/cyc/.ssh && \
+    mkdir -p /home/cyc/.enterprise && \
+    mkdir -p /usr/lib/jvm && \
+    mkdir -p /etc/java/java-21-openjdk && \
+    mkdir -p /etc/pki/ca-trust/extracted && \
+    mkdir -p /home/ccache_data && \
+    chmod 777 /home/ccache_data && \
+    # zypper ar http://sles-update.cec.lab.emc.com/repo/SUSE/Updates/SLE-Product-SLES_SAP/15-SP4/x86_64/update/ CommonOS-SLES-SAP-Updates && \
+    #zypper ar http://sles-update.cec.lab.emc.com/repo/SUSE/Products/SLE-Module-Web-Scripting/15-SP4/x86_64/product/ CommonOS-Product-Module-Web-Scripting && \
+    #zypper ar http://sles-update.cec.lab.emc.com/repo/SUSE/Updates/SLE-Module-Basesystem/15-SP4/x86_64/update/ CommonOS-Updates-Debug-Module-Basesystem && \
+    #zypper install -y libicu73_2 && \
+    #zypper install -y nodejs=18.20.6-150400.9.33.1 && \
+    #zypper update -y && \
+    #zypper install -y npm && \
+    echo "export CURL_SSL_VERIFYPEER=0" >> /home/cyc/.bashrc && \
+    echo "set -o vi" >> /home/cyc/.bashrc && \
+    sed -i '/^DOCKER_OPTS=/d' ${CONFIG_FILE} && \
+    echo ${NEW_OPT} >> ${CONFIG_FILE} && \
+    echo "set background=dark" >> /home/cyc/.vimrc && \
+    echo "set laststatus=2" >> /home/cyc/.vimrc && \
+    sed -i '2i\ \ "hosts": ["unix:///tmp/.docker/docker.sock"],' /etc/docker/daemon.json
+    # Dir .ssh is copied from devvm host in order for container to run git clone git@eos2git.cec.lab.emc.com without password
+COPY group /etc/group
+COPY jvm/java-21-openjdk-21.0.4.0.7-1.0.1.el8.x86_64 /usr/lib/jvm/
+COPY java-21-openjdk-21.0.4.0.7-1.0.1.el8.x86_64 /etc/java/java-21-openjdk/
+COPY extracted/pem /etc/pki/ca-trust/extracted/
+COPY extracted/openssl /etc/pki/ca-trust/extracted/
+COPY .ssh/id_rsa /home/cyc/.ssh/id_rsa
+COPY .ssh/known_hosts /home/cyc/.ssh/known_hosts
+COPY ./start_build.sh /home/cyc/bin/
+COPY .gitconfig /home/cyc/
+COPY .bashrc /home/cyc/
+COPY environment /etc/environment
+COPY .profile /home/cyc/.profile
+COPY .git-credentials /home/cyc/
+COPY node-v23.9.0-linux-x64.tar.xz /tmp/
+COPY .gitmodules /home/cyc/
+
+RUN chown -R cyc:cyc /home/cyc && \
+    chmod 700 /home/cyc/.ssh && \
+    chmod 600 /home/cyc/.ssh/id_rsa && \
+    mkdir -p /var/run && \
+    echo "export CURL_SSL_VERIFYPEER=0" >> /home/cyc/.bashrc && \
+    tar -xvf /tmp/node-v23.9.0-linux-x64.tar.xz -C /home/cyc/bin/ && \
+    ln -s /usr/lib/jvm/java-21-openjdk-21.0.4.0.7-1.0.1.el8.x86_64 /etc/alternatives/java_sdk_21_openjdk && \
+    ln -s /etc/alternatives/java_sdk_21_openjdk /usr/lib/jvm/java-21-openjdk && \
+    ln -s /etc/alternatives/java_sdk_21 /usr/lib/jvm/java-21 && \
+    ln -s /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem /etc/ssl/certs/ca-bundle.crt && \
+    ln -s /etc/pki/ca-trust/extracted/openssl/ca-bundle.trust.crt /etc/ssl/certs/ca-bundle.trust.crt && \
+    ln -s /home/ccache_data /ccache_data && \
+    chown -R cyc:cyc /home/cyc
+
+# Switch to cyc user
+USER cyc
+WORKDIR /c4_working/cyc
+ENV PATH=/home/cyc/bin/node-v23.9.0-linux-x64/bin:/home/cyc/bin:/usr/local/bin:/usr/bin:/bin:$JAVA_HOME/bin
+CMD ["/bin/bash"]
+#CMD ["/home/cyc/bin/start_build.sh"]
+
+##################
+build
+###################
+cp Dockerfile.cyclone ./Dockerfile
+docker-buildx build --debug --no-cache -t s15sp4cyclonebuilder-b2d:latest .
+docker tag s15sp4cyclonebuilder-b2d:latest 10.244.32.87:5000/s15sp4cyclonebuilder-b2d:latest
+docker push 10.244.32.87:5000/s15sp4cyclonebuilder-b2d:latest
