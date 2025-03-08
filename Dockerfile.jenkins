@@ -1,0 +1,72 @@
+ARG BASE_IMAGE="jenkins/jenkins:lts"
+FROM ${BASE_IMAGE}
+
+ARG JENKINS_URL="http://10.207.128.238:8080"
+ARG ADMIN_USER_ID="zhangj93"
+ARG GREENBED_API_SERVER="http://10.207.128.238:8808"
+ARG QTEST_TOKEN="754b6e28-ec35-41a6-8fb6-746ec54496f8"
+ARG GLOBAL_ENV_CONFIG_FILE="config/jenkins.yaml"
+ARG TEST_SCRIPTS_FOLDER_PATH=""
+ARG QTEST_SCRIPTS_FOLDER_PATH=""
+ARG SVC_ACCOUNT="svc_prdunitybld"
+ARG SVC_PASSWORD="_Kqv18~*uY6Z0wL3XFsANc4T"
+ARG K8S_SERVER="10.229.115.123"
+ARG K8S_SERVER_USERID="root"
+ARG K8S_SERVER_PASSWORD="Password123!"
+
+ENV JAVA_OPTS "-Djenkins.install.runSetupWizard=false -Djava.awt.headless=true -Dhudson.model.DirectoryBrowserSupport.CSP=\"default-src 'self' 'unsafe-inline' 'unsafe-eval'; img-src 'self' 'unsafe-inline' data:;\""
+ENV CASC_JENKINS_CONFIG /usr/share/jenkins/jenkins.yaml
+ENV GIT_SSL_NO_VERIFY false
+
+#COPY jobs/build-powerstorevsa/config.xml /usr/share/jenkins/ref/jobs/build-powerstorevsa/config.xml
+#COPY jobs/build-unity/config.xml /usr/share/jenkins/ref/jobs/build-unity/config.xml
+#COPY jobs/test-automatos/config.xml /usr/share/jenkins/ref/jobs/test-automatos/config.xml
+COPY jobs/build-unity-k8s/config.xml /usr/share/jenkins/ref/jobs/build-unity-k8s/config.xml
+#COPY jobs/test-unity-k8s/config.xml /usr/share/jenkins/ref/jobs/test-unity-k8s/config.xml
+COPY config/plugins.txt /usr/share/jenkins/ref/plugins.txt
+RUN jenkins-plugin-cli -f /usr/share/jenkins/ref/plugins.txt
+
+# do root stuff
+USER root
+RUN apt-get update
+RUN apt-get install -y xmlstarlet
+RUN mkdir -p /usr/share/jenkins/cit/
+COPY scripts/do_job_utility.sh /usr/share/jenkins/cit/do_job_utility.sh
+#COPY scripts/do_job_powerstorevsa.sh /usr/share/jenkins/cit/do_job_powerstorevsa.sh
+#COPY scripts/do_job_unity.sh /usr/share/jenkins/cit/do_job_unity.sh
+#COPY scripts/do_job_automatos.sh /usr/share/jenkins/cit/do_job_automatos.sh
+#COPY scripts/do_job_test_unity_k8s.sh /usr/share/jenkins/cit/do_job_test_unity_k8s.sh
+COPY scripts/do_job_build_unity_k8s.sh /usr/share/jenkins/cit/do_job_build_unity_k8s.sh
+COPY config/id_rsa_rsync /usr/share/jenkins/cit/id_rsa_rsync
+COPY config/id_rsa_rsync.pub /usr/share/jenkins/cit/id_rsa_rsync.pub
+COPY config/cacerts /opt/java/openjdk/lib/security/cacerts
+RUN curl -L -o /usr/bin/jq https://github.com/jqlang/jq/releases/download/jq-1.6/jq-linux64
+RUN chmod +x /usr/bin/jq
+COPY bin/sshpass /usr/bin/sshpass
+RUN chmod +x /usr/bin/sshpass
+COPY bin/kubectl /usr/bin/kubectl
+RUN chmod +x /usr/bin/kubectl
+COPY ${GLOBAL_ENV_CONFIG_FILE:-config/jenkins.yaml} /usr/share/jenkins/jenkins.yaml
+RUN true && \
+    sed -i "s|<--JENKINS_URL-->|${JENKINS_URL}|" /usr/share/jenkins/jenkins.yaml && \
+    sed -i "s|<--ADMIN_USER_ID-->|${ADMIN_USER_ID}|" /usr/share/jenkins/jenkins.yaml && \
+    sed -i "s|<--GREENBED_API_SERVER-->|${GREENBED_API_SERVER}|" /usr/share/jenkins/jenkins.yaml && \
+    sed -i "s|<--QTEST_TOKEN-->|${QTEST_TOKEN}|" /usr/share/jenkins/jenkins.yaml && \
+    sed -i "s|<--SVC_ACCOUNT-->|${SVC_ACCOUNT}|" /usr/share/jenkins/jenkins.yaml && \
+    sed -i "s|<--SVC_PASSWORD-->|${SVC_PASSWORD}|" /usr/share/jenkins/jenkins.yaml && \
+    sed -i "s|<--K8S_SERVER-->|${K8S_SERVER}|" /usr/share/jenkins/jenkins.yaml && \
+    sed -i "s|<--K8S_SERVER_USERID-->|${K8S_SERVER_USERID}|" /usr/share/jenkins/jenkins.yaml && \
+    sed -i "s|<--K8S_SERVER_PASSWORD-->|${K8S_SERVER_PASSWORD}|" /usr/share/jenkins/jenkins.yaml && \
+    true
+USER jenkins
+
+COPY ${TEST_SCRIPTS_FOLDER_PATH:-no_content} /usr/share/jenkins/cit/test/
+COPY ${QTEST_SCRIPTS_FOLDER_PATH:-no_content} /usr/share/jenkins/cit/qtest/
+
+
+###############
+build
+###############
+docker-buildx build --debug --no-cache -t ci-jenkins:latest .
+docker tag ci-jenkins:latest 10.244.32.87:5000/ci-jenkins:latest
+docker push 10.244.32.87:5000/ci-jenkins:latest
