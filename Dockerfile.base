@@ -1,0 +1,25 @@
+# build image from zero
+FROM scratch
+
+# rootfs from chroot tar archive
+ADD buildenv.tar.gz /
+
+# necessary tools
+COPY git-lfs /usr/bin/git-lfs
+
+RUN rm -rf /usr/csx/c4global && \
+    ln -s /c4shares/re/c4global /usr/csx/c4global && \
+    zypper ar http://sles-update.cec.lab.emc.com/repo/SUSE/Updates/SLE-Product-SLES_SAP/15-SP4/x86_64/update/ CommonOS-SLES-SAP-Updates && \
+    zypper ar http://sles-update.cec.lab.emc.com/repo/SUSE/Products/SLE-Module-Web-Scripting/15-SP4/x86_64/product/ CommonOS-Product-Module-Web-Scripting && \
+    zypper update -y && \
+    zypper install -y dracut dracut-fips tree && \
+    zypper install -y --force openssh && \
+    zypper install -y npm
+
+###############################
+build base
+###############################
+cp Dockerfile.base ./Dockerfile
+docker-buildx build -t commons15sp4-builder:base .
+docker tag commons15sp4-builder:base 10.244.32.87:5000/commons15sp4-builder:base
+docker push 10.244.32.87:5000/commons15sp4-builder:base
