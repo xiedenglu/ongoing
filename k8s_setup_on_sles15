@@ -1,0 +1,489 @@
+###############################
+k8s kickoff on SLES15
+###############################
+#####################
+### Prerequisites ###
+#####################
+- At least 3 SLES15SP4 VMs (1 master node, 2 worker nodes)
+- Root access to all nodes
+- subnet of these 3 VMs IP are management plane
+- Update the SLES15 system packages on all nodes
+
+
+######################################
+####  INSTALL STEPS with root user ###
+######################################
+1. **Prepare nodes**
+2. **Install Docker/CRI/CNI **
+3. **Install kubeadm, kubelet, and kubectl**
+4. **Initialize the Control Plane Node**
+5. **Install a Network Add-on flannel**
+6. **Install worker node and join the Cluster**
+7. **Deploy dashboard UI**
+8. **create admin-user/Get token**
+
+
+######################################################
+##   Step 1. Prepare nodes                         ###
+######################################################
+1. Tunrn of swap/firewalld/selinux on all nodes for latter init k8s master
+
+// disable firewalld
+systemctl stop firewalld.service
+systemctl disable firewalld.service
+
+// selinux
+vim  /etc/selinux/config
+SELINUX=enforcing-->SELINUX=disabled
+
+// swapoff
+swapoff -a
+Or 
+vim /etc/fstab
+#UUID=b7d06eb0-b9c8-4289-aa48-2c5ab6f7c2e1 none                    swap    defaults        0 0
+
+Create a service to make sure swapoff:
+cat <<EOF | sudo tee /etc/systemd/system/disable-swap.service
+[Unit]
+Description=Disable Swap
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/swapoff -a
+RemainAfterExit=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl enable disable-swap.service
+sudo systemctl start disable-swap.service
+
+
+2. Load kernel modules. They are enabled by default on dev VM.
+sudo modprobe overlay
+sudo modprobe br_netfilter
+
+
+3. Set required sysctl parameters**:
+   
+   Add these lines to `/etc/sysctl.d/k8s.conf`:
+
+sudo tee /etc/sysctl.d/k8s.conf <<EOF
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+vm.swappiness=0
+EOF
+
+sudo sysctl --system
+
+
+#####################################################
+###     Step 2: Install Docker/CRI/CNI    ###
+#####################################################
+
+# Option 1: docker + cri-dockerd
+# since k8s 1.24, docker is not supported as direct CRI runtime, we have to install cri-dockerd to support docker as CRI. 
+# Install docker 
+zipper install -y docker
+
+# install cri-dockerd refer to: https://computingforgeeks.com/install-mirantis-cri-dockerd-as-docker-engine-shim-for-kubernetes/
+VER=$(curl -s https://api.github.com/repos/Mirantis/cri-dockerd/releases/latest|grep tag_name | cut -d '"' -f 4|sed 's/v//g')
+echo $VER
+
+wget https://github.com/Mirantis/cri-dockerd/releases/download/v${VER}/cri-dockerd-${VER}.amd64.tgz
+tar xvf cri-dockerd-${VER}.amd64.tgz
+
+sudo mv cri-dockerd/cri-dockerd /usr/local/bin/
+
+copy https://github.com/Mirantis/cri-dockerd/blob/master/packaging/systemd/cri-docker.service
+copy https://github.com/Mirantis/cri-dockerd/blob/master/packaging/systemd/cri-docker.socket
+sudo mv cri-docker.socket cri-docker.service /etc/systemd/system/
+sudo sed -i -e 's,/usr/bin/cri-dockerd,/usr/local/bin/cri-dockerd,' /etc/systemd/system/cri-docker.service
+
+# edit cri-docker.service to ensure endpoints are correct. PowerStore build docker rely on /var/run/docker.socket which is different from Unity docker at /tmp/.docker/docker.sock
+/usr/local/bin/cri-dockerd --container-runtime-endpoint unix:///run/cri-dockerd.sock --docker-endpoint unix:///var/run/docker.sock
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now cri-docker.socket
+sudo systemctl enable cri-docker.service
+
+
+# option 2 containerd 
+wget https://github.com/containerd/containerd/releases/download/v2.0.1/containerd-2.0.1-linux-amd64.tar.gz
+tar zxvf containerd-2.0.1-linux-amd64.tar.gz /usr/local/bin/
+sudo mkdir -p /etc/systemd/system/containerd.service.d 
+
+sudo tee /etc/systemd/system/containerd.service <<EOF
+[Unit]
+Description=containerd container runtime
+Documentation=https://containerd.io
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/containerd
+Delegate=yes
+KillMode=process
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo mkdir -p /etc/containerd
+sudo containerd config default | sudo tee /etc/containerd/config.toml
+
+sudo systemctl daemon-reload
+sudo systemctl enable containerd
+sudo systemctl start containerd
+sudo systemctl status containerd
+
+sudo mkdir -p /etc/systemd/system/kubelet.service.d/
+sudo tee /etc/systemd/system/kubelet.service.d/10-kubeadm.conf <<EOF
+[Service]
+Environment="KUBELET_EXTRA_ARGS=--container-runtime-endpoint=unix:///run/containerd/containerd.sock"
+EOF
+
+
+#### Option 3 CRI-O 
+https://github.com/cri-o/packaging/blob/main/README.md # for usage
+
+## add zipper repo
+cat <<EOF | sudo tee /etc/zypp/repos.d/cri-o.repo
+[cri-o]
+name=CRI-O
+baseurl=https://pkgs.k8s.io/addons:/cri-o:/stable:/v1.31/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://pkgs.k8s.io/addons:/cri-o:/stable:/v1.31/rpm/repodata/repomd.xml.key
+EOF
+
+zipper install -y cri-o
+systemctl enable crio.service
+systemctl start crio.service
+systemctl status crio.service
+
+########################################################
+###  Step 3: Install kubeadm, kubelet, and kubectl   ###
+########################################################
+
+# Add the Kubernetes zypper repository. If you want to use Kubernetes version different than v1.32, replace v1.32 with the desired minor version in the command below.
+# In order to use Unity CSI plugin, the k8s version v1.31 is mustdo. The newest v1.32 is not supported by Unity CSI currently by today.
+
+# This overwrites any existing configuration in /etc/zypp/repos.d/kubernetes.repo
+cat <<EOF | sudo tee /etc/zypp/repos.d/kubernetes.repo
+[kubernetes]
+name=Kubernetes
+baseurl=https://pkgs.k8s.io/core:/stable:/v1.31/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://pkgs.k8s.io/core:/stable:/v1.31/rpm/repodata/repomd.xml.key
+EOF
+
+sudo zypper refresh
+sudo zypper update -y
+
+zypper install -y kubeadm kubelet kubectl
+
+systemctl daemon-reload
+systemctl enable kubelet
+systemctl start kubelet
+systemctl restart kubelet
+
+
+###########################################
+###  Step 4: Init k8s controller        ###
+###########################################
+# Learning please go to https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/kubelet-integration/#configure-kubelets-using-kubeadm
+
+# Init with all logs
+kubeadm init --v=5 --pod-network-cidr=10.144.0.0/16 --apiserver-advertise-address=10.229.115.123
+
+# OR ignore error logs during init
+kubeadm init --ignore-preflight-errors=all --v=5 --cri-socket unix:///run/cri-dockerd.sock --pod-network-cidr=10.144.0.0/16 --apiserver-advertise-address=10.229.115.123
+
+# Command to see the default config for kubeadm
+kubeadm config print init-defaults >kubeadm-config.yaml
+
+
+!!!!! Warning: issues here !!!!!
+>>> webhook auth issue was caused by incorrect setting of /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+    Dec 27 15:29:42 master-node kubelet[19349]: E1227 15:29:42.884122   19349 run.go:72] "command failed" err="failed to run Kubelet: no client provided, cannot use webhook authorization"
+RCA:     Missing "--kubeconfig=/etc/kubernetes/kubelet.conf" in KUBELET_CONFIG_ARGS
+
+>>> When use containerd and cri-dockerd, kubelet v1.32 complained runtime not implemented CRI. Then use cri-o as runtime.
+
+>> I1227 16:38:33.110799    5965 patchnode.go:31] [patchnode] Uploading the CRI Socket information "unix:///run/crio/crio.sock" to the Node API object "master-node" as an annotation
+nodes "master-node" not found
+RCA:     Missing "--kubeconfig=/etc/kubernetes/kubelet.conf" in KUBELET_CONFIG_ARGS
+  Solution: Below line MUST be in /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+[Service]
+Environment="KUBELET_CONFIG_ARGS=--config=/var/lib/kubelet/config.yaml --kubeconfig=/etc/kubernetes/kubelet.conf"
+!!!! End of warning !!!!
+
+# complete config file 
+[Service]
+Environment="KUBELET_KUBEADM_ARGS=--cgroup-driver=systemd --pod-infra-container-image=k8s.gcr.io/pause:3.10"
+Environment="KUBELET_CONFIG_ARGS=--config=/var/lib/kubelet/config.yaml --kubeconfig=/etc/kubernetes/kubelet.conf"
+Environment="KUBELET_EXTRA_ARGS=--container-runtime-endpoint=unix:///run/crio/crio.sock --v=8"
+
+EnvironmentFile=-/var/lib/kubelet/kubeadm-flags.env
+ExecStart=
+ExecStart=/usr/bin/kubelet $KUBELET_KUBEADM_ARGS $KUBELET_CONFIG_ARGS $KUBELET_EXTRA_ARGS
+
+============================
+>>>> First done cluster: log exmaple
+To start using your cluster, you need to run the following as a regular user:
+
+  mkdir -p $HOME/.kube
+  sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+  sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+Alternatively, if you are the root user, you can run:
+
+  export KUBECONFIG=/etc/kubernetes/admin.conf
+
+You should now deploy a pod network to the cluster.
+Run "kubectl apply -f [podnetwork].yaml" with one of the options listed at:
+  https://kubernetes.io/docs/concepts/cluster-administration/addons/
+
+Then you can join any number of worker nodes by running the following on each as root:
+
+kubeadm join 10.229.115.123:6443 --token mhmt0u.1zvmprodlyxdf17r --discovery-token-ca-cert-hash sha256:f6f5c00b400f6a3634969d6d8c2e56d7aa28cc97b5814bc36cece868b51da461
+
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+>>>> End of log example
+
+
+##############################################################
+### Step 5: install CNI plugin flannel on controller node  ###
+##############################################################
+wget https://raw.githubusercontent.com/flannel-io/flannel/v0.20.2/Documentation/kube-flannel.yml
+
+# Update the namespace from kube-flannel to kube-system and then:
+kubectl apply -f kube-flannel.yml 
+
+#####################################################################################
+### Step 6: install cri-dockerd, docker, kubeadm, kubectl, kubelet on worker node ###
+#####################################################################################
+cat <<EOF | sudo tee /etc/zypp/repos.d/cri-o.repo
+[cri-o]
+name=CRI-O
+baseurl=https://pkgs.k8s.io/addons:/cri-o:/stable:/v1.31/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://pkgs.k8s.io/addons:/cri-o:/stable:/v1.31/rpm/repodata/repomd.xml.key
+EOF
+
+cat <<EOF | sudo tee /etc/zypp/repos.d/kubernetes.repo
+[kubernetes]
+name=Kubernetes
+baseurl=https://pkgs.k8s.io/core:/stable:/v1.31/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://pkgs.k8s.io/core:/stable:/v1.31/rpm/repodata/repomd.xml.key
+EOF
+
+zypper refresh
+zypper install -y kubeadm kubelet kubectl cri-dockerd
+systemctl enable kubelet
+
+swapoff -a
+
+# Join the cluster
+kubeadm join 10.229.115.123:6443 --token mhmt0u.1zvmprodlyxdf17r --discovery-token-ca-cert-hash sha256:f6f5c00b400f6a3634969d6d8c2e56d7aa28cc97b5814bc36cece868b51da461
+
+
+// regenerate the token command after 24 hours
+kubeadm token create --print-join-command
+
+>>>>>>>>>> First successful join after disable firewalld on controller node <<<<
+devaas-worker-10-229-115-125:~ # kubeadm join 10.229.115.123:6443 --cri-socket unix:///run/crio/crio.sock --token 8k4awk.zlixkm0957bz32q0 --discovery-token-ca-cert-hash sha256:b5ff2113d28b7e47e487f0ee11f317881e277c95600336d137acc27a298da662
+[preflight] Running pre-flight checks
+        [WARNING SystemVerification]: cgroups v1 support is in maintenance mode, please migrate to cgroups v2
+[preflight] Reading configuration from the "kubeadm-config" ConfigMap in namespace "kube-system"...
+[preflight] Use 'kubeadm init phase upload-config --config your-config.yaml' to re-upload it.
+[kubelet-start] Writing kubelet configuration to file "/var/lib/kubelet/config.yaml"
+[kubelet-start] Writing kubelet environment file with flags to file "/var/lib/kubelet/kubeadm-flags.env"
+[kubelet-start] Starting the kubelet
+[kubelet-check] Waiting for a healthy kubelet at http://127.0.0.1:10248/healthz. This can take up to 4m0s
+[kubelet-check] The kubelet is healthy after 1.001334677s
+[kubelet-start] Waiting for the kubelet to perform the TLS Bootstrap
+
+This node has joined the cluster:
+* Certificate signing request was sent to apiserver and a response was received.
+* The Kubelet was informed of the new secure connection details.
+
+Run 'kubectl get nodes' on the control-plane to see 
+>>>>>>>>>> End of join log <<<<<<<<<<<<<<<<<<
+
+
+###################################
+### Step 7: Deploy dashboard UI ###
+###################################
+Option 1: kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml (failed)
+Option 2: https://blog.csdn.net/tonyhi6/article/details/139035174
+
+  # the newest helm works better.
+  wget  https://get.helm.sh/helm-v3.15.0-linux-amd64.tar.gz
+  tar zxvf helm-v3.15.0-linux-amd64.tar.gz
+  mv linux-amd64/helm /usr/bin/
+  helm repo add kubernetes-dashboard https://kubernetes.github.io/dashboard/
+  helm repo list
+  helm search repo kubernetes-dashboard
+  helm upgrade --install kubernetes-dashboard kubernetes-dashboard/kubernetes-dashboard --create-namespace --namespace kubernetes-dashboard
+
+  // Remove
+  helm uninstall kubernetes-dashboard --namespace kubernetes-dashboard
+
+>>>>>>>>>>>>>>>>>> Start of log output example <<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+Release "kubernetes-dashboard" does not exist. Installing it now.
+NAME: kubernetes-dashboard
+LAST DEPLOYED: Thu Jan  2 02:41:01 2025
+NAMESPACE: kubernetes-dashboard
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+*************************************************************************************************
+*** PLEASE BE PATIENT: Kubernetes Dashboard may need a few minutes to get up and become ready ***
+*************************************************************************************************
+
+Congratulations! You have just installed Kubernetes Dashboard in your cluster.
+
+To access Dashboard run:
+  kubectl -n kubernetes-dashboard port-forward svc/kubernetes-dashboard-kong-proxy 8443:443
+
+NOTE: In case port-forward command does not work, make sure that kong service name is correct.
+      Check the services in Kubernetes Dashboard namespace using:
+        kubectl -n kubernetes-dashboard get svc
+
+Dashboard will be available at:
+  https://localhost:8443
+>>>>>>>>>>>>>>>>>>> End of log output Example  <<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+##################################################
+### Step 8: create admin-user/Get token        ###
+##################################################
+kubectl edit svc  -n kubernetes-dashboard  kubernetes-dashboard-kong-proxy
+type: ClusterIP --> type: NodePort
+
+// check
+kubectl get svc -A |grep kubernetes-dashboard
+
+vi dashboard-user.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: admin-user
+  namespace: kubernetes-dashboard
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: admin-user
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: admin-user
+  namespace: kubernetes-dashboard
+
+// Create user and binding
+kubectl  apply -f dashboard-user.yaml
+//create token
+kubectl -n kubernetes-dashboard  create token admin-user
+
+// Create secret
+vi dashboard-admin.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: admin-user
+  namespace: kubernetes-dashboard
+  annotations:
+    kubernetes.io/service-account.name: "admin-user"
+type: kubernetes.io/service-account-token
+ 
+// Create
+kubectl  apply -f dashboard-admin.yaml
+
+// Get token
+kubectl get secret admin-user -n kubernetes-dashboard -o jsonpath={".data.token"} | base64 -d
+
+>>>>>> Issue: can't access the portal <<<<
+Resolution: restart coreDNS pod to resolve the kubernetes-dashboard-web
+
+// Test if coreDNS works or not
+kubectl run -it --rm --image=alpine dns-test -- /bin/sh
+/ # nslookup kubernetes-dashboard-web
+ nslookup eos2git.cec.lab.emc.com
+
+
+##################################################
+### Step 9. Install cluster docker image repo  ###
+##################################################
+docker run -d -p 10.244.32.87:5432:5000 --name registry registry:2
+docker push 10.244.32.87:5432/s15sp4unitydockerbuilder-b2d:latest
+sudo mkdir -p /etc/docker/certs.d/10.244.32.87:5000
+scp c4dev@10.244.32.87:/home/c4dev/unity_docker/docker-image-repo/domain.crt /etc/docker/certs.d/10.244.32.87:5000/ca.crt
+
+// Query the image list in repo. "-k" ignore the ssl verification for self signed certificate
+curl -k -X GET https://10.244.32.87:5000/v2/_catalog
+curl -X GET https://10.244.32.87:5000/v2/s15sp4unitydockerbuilder-b2d/tags/list
+
+
+##############################################################
+### Step 10. (Optional) Install CSI Unity plugin           ###
+##############################################################
+# official website for Unity CSI: https://dell.github.io/csm-docs/docs/deployment/helm/drivers/installation/unity/
+systemctl enable multipathd
+systemctl enable iscsid
+systemctl start multipathd
+systemctl start iscsid
+
+kubectl create namespace unity
+openssl s_client -showcerts -connect 10.229.34.223:443 </dev/null 2>/dev/null | openssl x509 -outform PEM > ca_cert_0.pem
+kubectl create secret generic unity-certs-0 --from-file=cert-0=ca_cert_0.pem -n unity
+kubectl create secret generic unity-certs-0 -n unity --from-file=cert-0=ca_cert_0.pem -o yaml --dry-run | kubectl replace -f -
+
+secret.yaml (csi-unity/samples/secret/secret.yaml)
+kubectl create secret generic unity-creds -n unity --from-file=config=secret.yaml
+
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshotclasses.yaml
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshotcontents.yaml
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshots.yaml
+
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/deploy/kubernetes/snapshot-controller/rbac-snapshot-controller.yaml
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml
+
+./csi-install.sh --namespace unity --values ./my-unity-settings.yaml --helm-charts-version release-v1.12.0
+
+>>>> Issue: must set the allowedNetworks: empty <<<<<<
+
+// Use CSI Plugin
+Steps to create storage class: There are samples storage class yaml files available under csi-unity/samples/storageclass. These can be copied and modified as needed.
+
+1. Pick any of unity-fc.yaml, unity-iscsi.yaml or unity-nfs.yaml
+2. Copy the file as unity-<ARRAY_ID>-fc.yaml, unity-<ARRAY_ID>-iscsi.yaml or unity-<ARRAY_ID>-nfs.yaml
+3. Replace <ARRAY_ID> with the Array Id of the Unity Array to be used
+4. Replace <STORAGE_POOL> with the storage pool you have
+5. Replace <TIERING_POLICY> with the Tiering policy that is to be used for provisioning
+6. Replace <HOST_IO_LIMIT_NAME> with the Host IO Limit Name that is to be used for provisioning
+7. Replace <mountOption1> with the necessary mount options. If not required, this can be removed from the storage class
+8. Edit storageclass.kubernetes.io/is-default-class to true if you want to set it as default, otherwise false.
+9. Save the file and create it by using kubectl create -f unity-<ARRAY_ID>-fc.yaml or kubectl create -f unity-<ARRAY_ID>-iscsi.yaml or kubectl create -f unity-<ARRAY_ID>-nfs.yaml
+
+>>>> Notes <<<<
+Add below label to each node to make sure the pod can be scheduled when use pvc from unity nfs share
+csi-unity.dellemc.com/apm00223904430-iscsi=true
+csi-unity.dellemc.com/apm00223904430-nfs=true
+
+##### End of all ###########
