@@ -2,6 +2,7 @@ esxcli network nic list
 https://support.huawei.com/enterprise/en/doc/EDOC1100075898/97ba9b3b/configuring-sr-iov-on-vmware-esxi
 
 
+https://study-ccnp.com/sr-iov-pci-passthrough-ovs-dpdk/
 The packets received by the pNIC go through various steps before transmitting to the Virtual Machines’ applications. These steps are as follows:
 
 1. The pNIC receives the data traffic and places it in an Rx queue (ring buffers).
@@ -15,3 +16,4 @@ The packets received by the pNIC go through various steps before transmitting to
 9. The vNIC sends an IRQ to the virtual CPU (vCPU).
 10. The vCPU passes the control to the vNIC driver that services the IRQ. It then receives the packet and moves it into the network stack. Finally, the packet arrives in a socket and is placed into a socket receive buffer.
 11. The packet data is then copied and sent to the VM application.
+
