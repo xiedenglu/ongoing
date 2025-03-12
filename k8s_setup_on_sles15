@@ -103,7 +103,7 @@ copy https://github.com/Mirantis/cri-dockerd/blob/master/packaging/systemd/cri-d
 sudo mv cri-docker.socket cri-docker.service /etc/systemd/system/
 sudo sed -i -e 's,/usr/bin/cri-dockerd,/usr/local/bin/cri-dockerd,' /etc/systemd/system/cri-docker.service
 
-# edit cri-docker.service to ensure endpoints are correct. PowerStore build docker rely on /var/run/docker.socket which is different from Unity docker at /tmp/.docker/docker.sock
+# edit cri-docker.service to ensure endpoints are correct. psd build docker rely on /var/run/docker.socket which is different from ylitai docker at /tmp/.docker/docker.sock
 /usr/local/bin/cri-dockerd --container-runtime-endpoint unix:///run/cri-dockerd.sock --docker-endpoint unix:///var/run/docker.sock
 
 sudo systemctl daemon-reload
@@ -171,7 +171,7 @@ systemctl status crio.service
 ########################################################
 
 # Add the Kubernetes zypper repository. If you want to use Kubernetes version different than v1.32, replace v1.32 with the desired minor version in the command below.
-# In order to use Unity CSI plugin, the k8s version v1.31 is mustdo. The newest v1.32 is not supported by Unity CSI currently by today.
+# In order to use ylitai CSI plugin, the k8s version v1.31 is mustdo. The newest v1.32 is not supported by ylitai CSI currently by today.
 
 # This overwrites any existing configuration in /etc/zypp/repos.d/kubernetes.repo
 cat <<EOF | sudo tee /etc/zypp/repos.d/kubernetes.repo
@@ -431,31 +431,31 @@ kubectl run -it --rm --image=alpine dns-test -- /bin/sh
 ### Step 9. Install cluster docker image repo  ###
 ##################################################
 docker run -d -p 10.244.32.87:5432:5000 --name registry registry:2
-docker push 10.244.32.87:5432/s15sp4unitydockerbuilder-b2d:latest
+docker push 10.244.32.87:5432/s15sp4ylitaidockerbuilder-b2d:latest
 sudo mkdir -p /etc/docker/certs.d/10.244.32.87:5000
-scp c4dev@10.244.32.87:/home/c4dev/unity_docker/docker-image-repo/domain.crt /etc/docker/certs.d/10.244.32.87:5000/ca.crt
+scp c4dev@10.244.32.87:/home/c4dev/ylitai_docker/docker-image-repo/domain.crt /etc/docker/certs.d/10.244.32.87:5000/ca.crt
 
 // Query the image list in repo. "-k" ignore the ssl verification for self signed certificate
 curl -k -X GET https://10.244.32.87:5000/v2/_catalog
-curl -X GET https://10.244.32.87:5000/v2/s15sp4unitydockerbuilder-b2d/tags/list
+curl -X GET https://10.244.32.87:5000/v2/s15sp4ylitaidockerbuilder-b2d/tags/list
 
 
 ##############################################################
-### Step 10. (Optional) Install CSI Unity plugin           ###
+### Step 10. (Optional) Install CSI ylitai plugin           ###
 ##############################################################
-# official website for Unity CSI: https://dell.github.io/csm-docs/docs/deployment/helm/drivers/installation/unity/
+# official website for ylitai CSI: https://dell.github.io/csm-docs/docs/deployment/helm/drivers/installation/ylitai/
 systemctl enable multipathd
 systemctl enable iscsid
 systemctl start multipathd
 systemctl start iscsid
 
-kubectl create namespace unity
+kubectl create namespace ylitai
 openssl s_client -showcerts -connect 10.229.34.223:443 </dev/null 2>/dev/null | openssl x509 -outform PEM > ca_cert_0.pem
-kubectl create secret generic unity-certs-0 --from-file=cert-0=ca_cert_0.pem -n unity
-kubectl create secret generic unity-certs-0 -n unity --from-file=cert-0=ca_cert_0.pem -o yaml --dry-run | kubectl replace -f -
+kubectl create secret generic ylitai-certs-0 --from-file=cert-0=ca_cert_0.pem -n ylitai
+kubectl create secret generic ylitai-certs-0 -n ylitai --from-file=cert-0=ca_cert_0.pem -o yaml --dry-run | kubectl replace -f -
 
-secret.yaml (csi-unity/samples/secret/secret.yaml)
-kubectl create secret generic unity-creds -n unity --from-file=config=secret.yaml
+secret.yaml (csi-ylitai/samples/secret/secret.yaml)
+kubectl create secret generic ylitai-creds -n ylitai --from-file=config=secret.yaml
 
 kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshotclasses.yaml
 kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshotcontents.yaml
@@ -464,26 +464,26 @@ kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snaps
 kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/deploy/kubernetes/snapshot-controller/rbac-snapshot-controller.yaml
 kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml
 
-./csi-install.sh --namespace unity --values ./my-unity-settings.yaml --helm-charts-version release-v1.12.0
+./csi-install.sh --namespace ylitai --values ./my-ylitai-settings.yaml --helm-charts-version release-v1.12.0
 
 >>>> Issue: must set the allowedNetworks: empty <<<<<<
 
 // Use CSI Plugin
-Steps to create storage class: There are samples storage class yaml files available under csi-unity/samples/storageclass. These can be copied and modified as needed.
+Steps to create storage class: There are samples storage class yaml files available under csi-ylitai/samples/storageclass. These can be copied and modified as needed.
 
-1. Pick any of unity-fc.yaml, unity-iscsi.yaml or unity-nfs.yaml
-2. Copy the file as unity-<ARRAY_ID>-fc.yaml, unity-<ARRAY_ID>-iscsi.yaml or unity-<ARRAY_ID>-nfs.yaml
-3. Replace <ARRAY_ID> with the Array Id of the Unity Array to be used
+1. Pick any of ylitai-fc.yaml, ylitai-iscsi.yaml or ylitai-nfs.yaml
+2. Copy the file as ylitai-<ARRAY_ID>-fc.yaml, ylitai-<ARRAY_ID>-iscsi.yaml or ylitai-<ARRAY_ID>-nfs.yaml
+3. Replace <ARRAY_ID> with the Array Id of the ylitai Array to be used
 4. Replace <STORAGE_POOL> with the storage pool you have
 5. Replace <TIERING_POLICY> with the Tiering policy that is to be used for provisioning
 6. Replace <HOST_IO_LIMIT_NAME> with the Host IO Limit Name that is to be used for provisioning
 7. Replace <mountOption1> with the necessary mount options. If not required, this can be removed from the storage class
 8. Edit storageclass.kubernetes.io/is-default-class to true if you want to set it as default, otherwise false.
-9. Save the file and create it by using kubectl create -f unity-<ARRAY_ID>-fc.yaml or kubectl create -f unity-<ARRAY_ID>-iscsi.yaml or kubectl create -f unity-<ARRAY_ID>-nfs.yaml
+9. Save the file and create it by using kubectl create -f ylitai-<ARRAY_ID>-fc.yaml or kubectl create -f ylitai-<ARRAY_ID>-iscsi.yaml or kubectl create -f ylitai-<ARRAY_ID>-nfs.yaml
 
 >>>> Notes <<<<
-Add below label to each node to make sure the pod can be scheduled when use pvc from unity nfs share
-csi-unity.dellemc.com/apm00223904430-iscsi=true
-csi-unity.dellemc.com/apm00223904430-nfs=true
+Add below label to each node to make sure the pod can be scheduled when use pvc from ylitai nfs share
+csi-ylitai.dellemc.com/apm00223904430-iscsi=true
+csi-ylitai.dellemc.com/apm00223904430-nfs=true
 
 ##### End of all ###########
