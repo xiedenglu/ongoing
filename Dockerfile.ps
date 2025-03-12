@@ -1,4 +1,4 @@
-# This base image installed necessary packages for c4dev_update.
+# This base image installed necessary packages for xfdox_update.
 #FROM commons15sp4-builder:base
 FROM s15sp4yalitaidockerbuilder-b2d:base
 
@@ -7,10 +7,10 @@ FROM s15sp4yalitaidockerbuilder-b2d:base
 ARG CONFIG_FILE="/etc/sysconfig/docker"
 ARG NEW_OPT='DOCKER_OPTS="--data-root /user_data_disk/docker -H unix:///var/run/docker.sock"'
 
-# Add c4dev user and set password
+# Add xfdox user and set password
 # SuSE version in container is for SLES 15 SP4
-# The docker group is used for c4dev user to run docker cli in container. the docker server run on host.
-#RUN useradd c4dev && echo "c4dev:c4dev!" | chpasswd && \
+# The docker group is used for xfdox user to run docker cli in container. the docker server run on host.
+#RUN useradd xfdox && echo "xfdox:xfdox" | chpasswd && \
 RUN groupadd --gid 1967 dzd && \
     useradd --uid 1967 --gid 1967 --create-home dzd && \
     echo "dzd:dzdpass" | chpasswd && \
