@@ -21,5 +21,5 @@ build base
 ###############################
 cp Dockerfile.base ./Dockerfile
 docker-buildx build -t commons15sp4-builder:base .
-docker tag commons15sp4-builder:base 10.244.32.87:5000/commons15sp4-builder:base
-docker push 10.244.32.87:5000/commons15sp4-builder:base
+docker tag commons15sp4-builder:base xx.xx.xx.xx:5000/commons15sp4-builder:base
+docker push xx.xx.xx.xx:5000/commons15sp4-builder:base
