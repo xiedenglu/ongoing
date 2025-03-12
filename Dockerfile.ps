@@ -1,8 +1,8 @@
 # This base image installed necessary packages for c4dev_update.
 #FROM commons15sp4-builder:base
-FROM s15sp4unitydockerbuilder-b2d:base
+FROM s15sp4yalitaidockerbuilder-b2d:base
 
-# Below settings are for git clone and Unity build
+# Below settings are for git clone and yalitai build
 
 ARG CONFIG_FILE="/etc/sysconfig/docker"
 ARG NEW_OPT='DOCKER_OPTS="--data-root /user_data_disk/docker -H unix:///var/run/docker.sock"'
@@ -11,14 +11,14 @@ ARG NEW_OPT='DOCKER_OPTS="--data-root /user_data_disk/docker -H unix:///var/run/
 # SuSE version in container is for SLES 15 SP4
 # The docker group is used for c4dev user to run docker cli in container. the docker server run on host.
 #RUN useradd c4dev && echo "c4dev:c4dev!" | chpasswd && \
-RUN groupadd --gid 1967 cyc && \
-    useradd --uid 1967 --gid 1967 --create-home cyc && \
-    echo "cyc:cycpass" | chpasswd && \
-    echo 'cyc ALL=(ALL:ALL) NOPASSWD: ALL' >> /etc/sudoers && \
-    usermod -aG docker cyc && \
-    mkdir -p /home/cyc/bin && \
-    mkdir -p /home/cyc/.ssh && \
-    mkdir -p /home/cyc/.enterprise && \
+RUN groupadd --gid 1967 dzd && \
+    useradd --uid 1967 --gid 1967 --create-home dzd && \
+    echo "dzd:dzdpass" | chpasswd && \
+    echo 'dzd ALL=(ALL:ALL) NOPASSWD: ALL' >> /etc/sudoers && \
+    usermod -aG docker dzd && \
+    mkdir -p /home/dzd/bin && \
+    mkdir -p /home/dzd/.ssh && \
+    mkdir -p /home/dzd/.enterprise && \
     mkdir -p /usr/lib/jvm && \
     mkdir -p /etc/java/java-21-openjdk && \
     mkdir -p /etc/pki/ca-trust/extracted && \
@@ -31,12 +31,12 @@ RUN groupadd --gid 1967 cyc && \
     #zypper install -y nodejs=18.20.6-150400.9.33.1 && \
     #zypper update -y && \
     #zypper install -y npm && \
-    echo "export CURL_SSL_VERIFYPEER=0" >> /home/cyc/.bashrc && \
-    echo "set -o vi" >> /home/cyc/.bashrc && \
+    echo "export CURL_SSL_VERIFYPEER=0" >> /home/dzd/.bashrc && \
+    echo "set -o vi" >> /home/dzd/.bashrc && \
     sed -i '/^DOCKER_OPTS=/d' ${CONFIG_FILE} && \
     echo ${NEW_OPT} >> ${CONFIG_FILE} && \
-    echo "set background=dark" >> /home/cyc/.vimrc && \
-    echo "set laststatus=2" >> /home/cyc/.vimrc && \
+    echo "set background=dark" >> /home/dzd/.vimrc && \
+    echo "set laststatus=2" >> /home/dzd/.vimrc && \
     sed -i '2i\ \ "hosts": ["unix:///tmp/.docker/docker.sock"],' /etc/docker/daemon.json
     # Dir .ssh is copied from devvm host in order for container to run git clone git@eos2git.cec.lab.emc.com without password
 COPY group /etc/group
@@ -44,42 +44,42 @@ COPY jvm/java-21-openjdk-21.0.4.0.7-1.0.1.el8.x86_64 /usr/lib/jvm/
 COPY java-21-openjdk-21.0.4.0.7-1.0.1.el8.x86_64 /etc/java/java-21-openjdk/
 COPY extracted/pem /etc/pki/ca-trust/extracted/
 COPY extracted/openssl /etc/pki/ca-trust/extracted/
-COPY .ssh/id_rsa /home/cyc/.ssh/id_rsa
-COPY .ssh/known_hosts /home/cyc/.ssh/known_hosts
-COPY ./start_build.sh /home/cyc/bin/
-COPY .gitconfig /home/cyc/
-COPY .bashrc /home/cyc/
+COPY .ssh/id_rsa /home/dzd/.ssh/id_rsa
+COPY .ssh/known_hosts /home/dzd/.ssh/known_hosts
+COPY ./start_build.sh /home/dzd/bin/
+COPY .gitconfig /home/dzd/
+COPY .bashrc /home/dzd/
 COPY environment /etc/environment
-COPY .profile /home/cyc/.profile
-COPY .git-credentials /home/cyc/
+COPY .profile /home/dzd/.profile
+COPY .git-credentials /home/dzd/
 COPY node-v23.9.0-linux-x64.tar.xz /tmp/
-COPY .gitmodules /home/cyc/
+COPY .gitmodules /home/dzd/
 
-RUN chown -R cyc:cyc /home/cyc && \
-    chmod 700 /home/cyc/.ssh && \
-    chmod 600 /home/cyc/.ssh/id_rsa && \
+RUN chown -R dzd:dzd /home/dzd && \
+    chmod 700 /home/dzd/.ssh && \
+    chmod 600 /home/dzd/.ssh/id_rsa && \
     mkdir -p /var/run && \
-    echo "export CURL_SSL_VERIFYPEER=0" >> /home/cyc/.bashrc && \
-    tar -xvf /tmp/node-v23.9.0-linux-x64.tar.xz -C /home/cyc/bin/ && \
+    echo "export CURL_SSL_VERIFYPEER=0" >> /home/dzd/.bashrc && \
+    tar -xvf /tmp/node-v23.9.0-linux-x64.tar.xz -C /home/dzd/bin/ && \
     ln -s /usr/lib/jvm/java-21-openjdk-21.0.4.0.7-1.0.1.el8.x86_64 /etc/alternatives/java_sdk_21_openjdk && \
     ln -s /etc/alternatives/java_sdk_21_openjdk /usr/lib/jvm/java-21-openjdk && \
     ln -s /etc/alternatives/java_sdk_21 /usr/lib/jvm/java-21 && \
     ln -s /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem /etc/ssl/certs/ca-bundle.crt && \
     ln -s /etc/pki/ca-trust/extracted/openssl/ca-bundle.trust.crt /etc/ssl/certs/ca-bundle.trust.crt && \
     ln -s /home/ccache_data /ccache_data && \
-    chown -R cyc:cyc /home/cyc
+    chown -R dzd:dzd /home/dzd
 
-# Switch to cyc user
-USER cyc
-WORKDIR /c4_working/cyc
-ENV PATH=/home/cyc/bin/node-v23.9.0-linux-x64/bin:/home/cyc/bin:/usr/local/bin:/usr/bin:/bin:$JAVA_HOME/bin
+# Switch to dzd user
+USER dzd
+WORKDIR /c4_working/dzd
+ENV PATH=/home/dzd/bin/node-v23.9.0-linux-x64/bin:/home/dzd/bin:/usr/local/bin:/usr/bin:/bin:$JAVA_HOME/bin
 CMD ["/bin/bash"]
-#CMD ["/home/cyc/bin/start_build.sh"]
+#CMD ["/home/dzd/bin/start_build.sh"]
 
 ##################
 build
 ###################
-cp Dockerfile.cyclone ./Dockerfile
-docker-buildx build --debug --no-cache -t s15sp4cyclonebuilder-b2d:latest .
-docker tag s15sp4cyclonebuilder-b2d:latest 10.244.32.87:5000/s15sp4cyclonebuilder-b2d:latest
-docker push 10.244.32.87:5000/s15sp4cyclonebuilder-b2d:latest
+cp Dockerfile.dzdlone ./Dockerfile
+docker-buildx build --debug --no-cache -t s15sp4dzdlonebuilder-b2d:latest .
+docker tag s15sp4dzdlonebuilder-b2d:latest xx.xx.xx.xx:5000/s15sp4dzdlonebuilder-b2d:latest
+docker push xx.xx.xx.xx:5000/s15sp4dzdlonebuilder-b2d:latest
